@@ -1,8 +1,13 @@
+"""
+Orchestration du traitement des fichiers de poker.
+Contient la logique d'agrégation et d'export.
+"""
+
 from pathlib import Path
 import logging
 
 from src.config import POKER_DATA_DIR, RAW_DATA_DIR
-from src.poker_parser import parse_poker_txt
+from src.preprocessing.tasks import parse_poker_txt
 import polars as pl
 
 # Configuration du logging
@@ -78,5 +83,10 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
     logger.info(f"   - actions.parquet: {len(actions_combined)} actions")
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Lance le pipeline de preprocessing."""
     process_poker_files()
+
+
+if __name__ == "__main__":
+    run()

@@ -1,5 +1,5 @@
 from src.dataset import download_poker_dataset
-from src.preprocessing import process_poker_files
+from src.preprocessing.process import run as run_preprocessing
 
 
 def main() -> None:
@@ -7,9 +7,9 @@ def main() -> None:
     dataset_path = download_poker_dataset(force_download=False)
     print(f"Dataset prêt dans : {dataset_path}")
 
-    # Parser et convertir les fichiers .txt en .csv structurés
+    # Parser et convertir les fichiers .txt en .parquet structurés
     print("Parsing des fichiers poker en datasets...")
-    process_poker_files()
+    run_preprocessing()
     print("Traitement terminé!")
 
 

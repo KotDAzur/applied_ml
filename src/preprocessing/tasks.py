@@ -1,6 +1,6 @@
 """
-Parser pour les fichiers de logs de poker Hold'em.
-Transforme les fichiers .txt en 3 dataframes structurées (Polars).
+Tâches de traitement des fichiers de poker.
+Contient les fonctions de parsing et transformation.
 """
 
 import re
@@ -18,7 +18,8 @@ def safe_float(x):
     try:
         return float(x)
     except (ValueError, TypeError):
-     return None
+        return None
+
 
 def parse_single_hand(block):
     """
@@ -35,24 +36,24 @@ def parse_single_hand(block):
         return None, [], []
 
     hand = {
-    "game_id": None,
-    "start_time": None,
-    "end_time": None,
-    "table_name": None,
-    "small_blind": None,
-    "big_blind": None,
-    "game_type": None,
-    "button_seat": None,
-    "num_players": 0,
-    "board_flop": None,
-    "board_turn": None,
-    "board_river": None,
-    "pot_total": None,
-    "rake": None,
-    "jp_fee": None,
-    "has_showdown": 0,
-    "winner_count": 0
-}
+        "game_id": None,
+        "start_time": None,
+        "end_time": None,
+        "table_name": None,
+        "small_blind": None,
+        "big_blind": None,
+        "game_type": None,
+        "button_seat": None,
+        "num_players": 0,
+        "board_flop": None,
+        "board_turn": None,
+        "board_river": None,
+        "pot_total": None,
+        "rake": None,
+        "jp_fee": None,
+        "has_showdown": 0,
+        "winner_count": 0
+    }
 
     players = {}
     current_street = "preflop"
@@ -335,6 +336,7 @@ def parse_single_hand(block):
 
     return hand, player_rows, actions_rows_local
 
+
 def parse_poker_txt(file_path):
     """
     Parse un fichier de logs poker et retourne 3 dataframes Polars.
@@ -353,12 +355,15 @@ def parse_poker_txt(file_path):
         with open(file_path, "r", encoding="latin-1") as f:
             text = f.read()
 
-    # Découpage en mains
-    blocks = [b.strip() for b in re.split(r'(?=Game started at:)', text) if b.strip()]
-
-    if not blocks:
+    # Découpage en mains : chercher le premier "Game started at:" et découper à partir de là
+    match = re.search(r'Game started at:', text)
+    if not match:
         logger.warning(f"Aucune main trouvée dans {file_path}")
         return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+    
+    # Garder seulement le texte à partir du premier "Game started at:"
+    text = text[match.start():]
+    blocks = [b.strip() for b in re.split(r'(?=Game started at:)', text) if b.strip()]
 
     hands_rows = []
     player_hands_rows = []
@@ -377,9 +382,89 @@ def parse_poker_txt(file_path):
 
     hands_df = pl.DataFrame(hands_rows) if hands_rows else pl.DataFrame()
     player_hands_df = pl.DataFrame(player_hands_rows) if player_hands_rows else pl.DataFrame()
+
+    # Normaliser les actions_rows aussi
+    if actions_rows:
+        all_keys = set()
+        for row in actions_rows:
+            all_keys.update(row.keys())
+
+        for row in actions_rows:
+            for key in all_keys:
+                if key not in row:
+                    row[key] = None
+
     actions_df = pl.DataFrame(actions_rows) if actions_rows else pl.DataFrame()
 
     logger.info(f"{Path(file_path).name}: {len(hands_df)} mains, {len(player_hands_df)} joueurs, {len(actions_df)} actions")
 
     return hands_df, player_hands_df, actions_df
+
+
+def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None:
+    """
+    Parse tous les fichiers .txt de poker et génère 3 fichiers .parquet structurés.
+
+    Args:
+        input_dir: Répertoire source contenant les fichiers .txt (défaut: POKER_DATA_DIR)
+        output_dir: Répertoire de destination pour les fichiers .parquet (défaut: data/processed)
+    """
+    if input_dir is None:
+        input_dir = POKER_DATA_DIR
+
+    if output_dir is None:
+        output_dir = RAW_DATA_DIR.parent / "processed"
+
+    # Créer le dossier output s'il n'existe pas
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Trouver tous les fichiers .txt
+    txt_files = sorted(input_dir.glob("*.txt"))
+
+    if not txt_files:
+        logger.warning(f"Aucun fichier .txt trouvé dans {input_dir}")
+        return
+
+    logger.info(f"Traitement de {len(txt_files)} fichier(s) .txt...")
+
+    all_hands = []
+    all_players = []
+    all_actions = []
+
+    # Parser tous les fichiers
+    for txt_file in txt_files:
+        try:
+            hands_df, players_df, actions_df = parse_poker_txt(txt_file)
+
+            if not hands_df.is_empty():
+                all_hands.append(hands_df)
+                all_players.append(players_df)
+                all_actions.append(actions_df)
+
+        except Exception as e:
+            logger.error(f"Erreur lors du parsing de {txt_file.name}: {e}")
+            continue
+
+    if not all_hands:
+        logger.error("Aucune donnée n'a pu être parsée")
+        return
+
+    # Concaténer tous les dataframes
+    hands_combined = pl.concat(all_hands)
+    players_combined = pl.concat(all_players)
+    actions_combined = pl.concat(all_actions)
+
+    # Sauvegarder les fichiers en Parquet
+    hands_file = output_dir / "hands.parquet"
+    players_file = output_dir / "player_hands.parquet"
+    actions_file = output_dir / "actions.parquet"
+
+    hands_combined.write_parquet(hands_file)
+    players_combined.write_parquet(players_file)
+    actions_combined.write_parquet(actions_file)
+
+    logger.info(f"Résultats sauvegardés dans {output_dir.name}/")
+    logger.info(f"   - hands.parquet: {len(hands_combined)} mains")
+    logger.info(f"   - player_hands.parquet: {len(players_combined)} joueurs")
+    logger.info(f"   - actions.parquet: {len(actions_combined)} actions")
 
