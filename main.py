@@ -1,5 +1,9 @@
-def main():
-    print("Hello from applied-ml!")
+from src.dataset import download_poker_dataset
+
+
+def main() -> None:
+    dataset_path = download_poker_dataset(force_download=False)
+    print(f"Dataset prêt dans : {dataset_path}")
 
 
 if __name__ == "__main__":
