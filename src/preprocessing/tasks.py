@@ -1,6 +1,13 @@
 """
-Tâches de traitement des fichiers de poker.
-Contient les fonctions de parsing et transformation.
+Tâches de parsing pour le format AbsolutePoker / UltimateBet.
+
+Format différent du format HoldemManager :
+  - Délimiteur de main : Stage #XXXXXXXX:
+  - Préflop marqué par *** POCKET CARDS ***
+  - Actions : PLAYER - Raises $X to $Y  (X = incrément, Y = total)
+  - Mises non suivies : PLAYER - returned ($X) : not called
+  - Pas de résumé par joueur → total_bet calculé à partir des actions
+  - Collect inline : PLAYER Collects $X from main pot
 """
 
 import re
@@ -8,25 +15,32 @@ import logging
 from pathlib import Path
 import pandas as pd
 
-# Configuration du logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def safe_float(x):
-    """Convertit une valeur en float, retourne None si impossible."""
+    """Convertit une valeur en float en ignorant les virgules de milliers."""
     try:
-        return float(x)
+        if x is None:
+            return None
+        return float(str(x).replace(",", ""))
     except (ValueError, TypeError):
         return None
 
 
 def parse_single_hand(block):
     """
-    Parse une seule main de poker.
+    Parse une seule main au format AbsolutePoker/UltimateBet.
 
-    Args:
-        block: Bloc de texte représentant une main
+    Calcul du total_bet par action :
+      - Ante, blind         → +amount
+      - Ante returned       → -amount  (ante non jouée rendue)
+      - Calls $X            → +X
+      - Bets $X             → +X
+      - Raises $X to $Y     → +X  (X = incrément de relance)
+      - returned ($X)       → -X  (mise non suivie rendue)
+      - Collects $X         → total_collect
 
     Returns:
         Tuple: (hand_dict, player_rows_list, actions_rows_list)
@@ -42,6 +56,7 @@ def parse_single_hand(block):
         "table_name": None,
         "small_blind": None,
         "big_blind": None,
+        "ante": None,
         "game_type": None,
         "button_seat": None,
         "num_players": 0,
@@ -50,15 +65,16 @@ def parse_single_hand(block):
         "board_river": None,
         "pot_total": None,
         "rake": None,
-        "jp_fee": None,
+        "jp_fee": 0.0,
         "has_showdown": 0,
-        "winner_count": 0
+        "winner_count": 0,
     }
 
     players = {}
     current_street = "preflop"
     action_order = 0
     actions_rows_local = []
+    in_summary = False
 
     def ensure_player(name):
         if name not in players:
@@ -77,75 +93,75 @@ def parse_single_hand(block):
                 "river_actions": [],
                 "total_bet": 0.0,
                 "total_collect": 0.0,
-                "summary_result": 0.0,
                 "showdown": 0,
                 "won_hand": 0,
                 "saw_flop": 0,
                 "saw_turn": 0,
                 "saw_river": 0,
                 "vpip": 0,
-                "preflop_raise": 0
+                "preflop_raise": 0,
             }
 
     def add_action(player, street, action_type, amount=0.0):
         nonlocal action_order
         ensure_player(player)
         action_order += 1
-
         actions_rows_local.append({
             "game_id": hand["game_id"],
             "player": player,
             "street": street,
             "action_order": action_order,
             "action_type": action_type,
-            "amount": amount
+            "amount": amount,
         })
-
         if street == "preflop":
             players[player]["preflop_actions"].append(action_type)
             if action_type in ["call", "raise", "bet"]:
                 players[player]["vpip"] = 1
             if action_type == "raise":
                 players[player]["preflop_raise"] = 1
-
         elif street == "flop":
             players[player]["flop_actions"].append(action_type)
             players[player]["saw_flop"] = 1
-
         elif street == "turn":
             players[player]["turn_actions"].append(action_type)
             players[player]["saw_turn"] = 1
-
         elif street == "river":
             players[player]["river_actions"].append(action_type)
             players[player]["saw_river"] = 1
 
-    # Parsing ligne par ligne
     for line in lines:
-        # Début
-        m = re.match(r"^Game started at: (.+)$", line)
-        if m:
-            hand["start_time"] = m.group(1)
-            continue
 
-        # Game ID / blindes / table
-        m = re.match(r"^Game ID: (\d+) ([\d.]+)/([\d.]+) \(([^)]+)\) (.+) \(Hold'em\)$", line)
+        # --- En-tête de main ---
+        # Stage #3063936648: Holdem  No Limit $10, $2.50 ante - 2009-07-14 08:40:14 (ET)
+        # Stage #3063937412: Holdem (1 on 1)  No Limit $10 - 2009-07-14 08:40:28 (ET)
+        m = re.match(
+            r"^Stage #(\d+): (.+?) - (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
+            line
+        )
         if m:
             hand["game_id"] = int(m.group(1))
-            hand["small_blind"] = safe_float(m.group(2))
-            hand["big_blind"] = safe_float(m.group(3))
-            hand["game_type"] = m.group(4)
-            hand["table_name"] = m.group(5)
+            hand["start_time"] = m.group(3)
+            game_desc = m.group(2)
+            blind_m = re.search(r"No Limit \$([\d,]+(?:\.\d+)?)", game_desc)
+            if blind_m:
+                hand["big_blind"] = safe_float(blind_m.group(1))
+                hand["small_blind"] = (hand["big_blind"] or 0) / 2
+            ante_m = re.search(r"\$([\d.]+) ante", game_desc)
+            if ante_m:
+                hand["ante"] = safe_float(ante_m.group(1))
+            hand["game_type"] = "NLH"
             continue
 
-        # Bouton
-        m = re.match(r"^Seat (\d+) is the button$", line)
+        # Table: CONCORD (Real Money) Seat #6 is the dealer
+        m = re.match(r"^Table: (.+?) \(Real Money\) Seat #(\d+) is the dealer$", line)
         if m:
-            hand["button_seat"] = int(m.group(1))
+            hand["table_name"] = m.group(1).strip()
+            hand["button_seat"] = int(m.group(2))
             continue
 
-        # Joueurs / sièges / stacks
-        m = re.match(r"^Seat (\d+): ([^(]+) \(([\d.]+)\)\.$", line)
+        # Seat 6 - GUxuIilV1hpyiiD3W74Pvw ($1,034 in chips)
+        m = re.match(r"^Seat (\d+) - (.+?) \(\$([\d,]+(?:\.\d+)?) in chips\)$", line)
         if m:
             seat = int(m.group(1))
             player = m.group(2).strip()
@@ -155,155 +171,181 @@ def parse_single_hand(block):
             players[player]["stack_start"] = stack
             continue
 
-        # Changement de street
+        # --- Summary ---
+        if line == "*** SUMMARY ***":
+            in_summary = True
+            continue
+
+        if in_summary:
+            # Total Pot($112.50) | Rake ($3)  ou  Total Pot($20)
+            m = re.match(
+                r"^Total Pot\(\$([\d,]+(?:\.\d+)?)\)(?:\s*\|\s*Rake \(\$([\d.]+)\))?",
+                line
+            )
+            if m:
+                hand["pot_total"] = safe_float(m.group(1))
+                hand["rake"] = safe_float(m.group(2)) if m.group(2) else 0.0
+            continue
+
+        # --- Marqueurs de street ---
+        if line == "*** POCKET CARDS ***":
+            current_street = "preflop"
+            continue
+
         if line.startswith("*** FLOP ***"):
             current_street = "flop"
-            m = re.match(r"^\*\*\* FLOP \*\*\*: \[([^\]]+)\]$", line)
+            m = re.match(r"^\*\*\* FLOP \*\*\* \[([^\]]+)\]$", line)
             if m:
                 hand["board_flop"] = m.group(1)
             continue
 
         if line.startswith("*** TURN ***"):
             current_street = "turn"
-            m = re.match(r"^\*\*\* TURN \*\*\*: \[[^\]]+\] \[([^\]]+)\]$", line)
+            m = re.match(r"^\*\*\* TURN \*\*\* \[[^\]]+\] \[([^\]]+)\]$", line)
             if m:
                 hand["board_turn"] = m.group(1)
             continue
 
         if line.startswith("*** RIVER ***"):
             current_street = "river"
-            m = re.match(r"^\*\*\* RIVER \*\*\*: \[[^\]]+\] \[([^\]]+)\]$", line)
+            m = re.match(r"^\*\*\* RIVER \*\*\* \[[^\]]+\] \[[^\]]+\] \[([^\]]+)\]$", line)
             if m:
                 hand["board_river"] = m.group(1)
             continue
 
-        # Cartes montrées au joueur
-        m = re.match(r"^Player ([^\s]+) received card: \[([^\]]+)\]$", line)
-        if m:
-            player, card = m.group(1), m.group(2)
-            ensure_player(player)
-            players[player]["hole_cards"].append(card)
-            players[player]["cards_known"] = 1
+        if line == "*** SHOW DOWN ***":
+            hand["has_showdown"] = 1
             continue
 
-        # Blinds
-        m = re.match(r"^Player ([^\s]+) has small blind \(([\d.]+)\)$", line)
+        # --- Antes ---
+        # Player - Ante $2.50
+        m = re.match(r"^(.+?) - Ante \$([\d.]+)$", line)
         if m:
-            player, amount = m.group(1), safe_float(m.group(2))
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
+            ensure_player(player)
+            players[player]["total_bet"] += amount
+            add_action(player, "preflop", "ante", amount)
+            continue
+
+        # Player - Ante returned $2.50
+        m = re.match(r"^(.+?) - Ante returned \$([\d.]+)$", line)
+        if m:
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
+            ensure_player(player)
+            players[player]["total_bet"] -= amount
+            continue
+
+        # Sitout — ignoré
+        if re.match(r"^(.+?) - sitout", line):
+            continue
+
+        # --- Blindes ---
+        m = re.match(r"^(.+?) - Posts small blind \$([\d,]+(?:\.\d+)?)$", line)
+        if m:
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
             ensure_player(player)
             players[player]["is_small_blind"] = 1
             players[player]["total_bet"] += amount
             add_action(player, "preflop", "small_blind", amount)
             continue
 
-        m = re.match(r"^Player ([^\s]+) has big blind \(([\d.]+)\)$", line)
+        m = re.match(r"^(.+?) - Posts big blind \$([\d,]+(?:\.\d+)?)$", line)
         if m:
-            player, amount = m.group(1), safe_float(m.group(2))
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
             ensure_player(player)
             players[player]["is_big_blind"] = 1
             players[player]["total_bet"] += amount
             add_action(player, "preflop", "big_blind", amount)
             continue
 
-        # Actions sans montant
-        m = re.match(r"^Player ([^\s]+) folds$", line)
+        # --- Actions ---
+        m = re.match(r"^(.+?) - Folds$", line)
         if m:
-            add_action(m.group(1), current_street, "fold", 0.0)
+            add_action(m.group(1).strip(), current_street, "fold", 0.0)
             continue
 
-        m = re.match(r"^Player ([^\s]+) checks$", line)
+        m = re.match(r"^(.+?) - Checks$", line)
         if m:
-            add_action(m.group(1), current_street, "check", 0.0)
+            add_action(m.group(1).strip(), current_street, "check", 0.0)
             continue
 
-        # Actions avec montant
-        m = re.match(r"^Player ([^\s]+) calls \(([\d.]+)\)$", line)
+        # Calls $X
+        m = re.match(r"^(.+?) - Calls \$([\d,]+(?:\.\d+)?)$", line)
         if m:
-            player, amount = m.group(1), safe_float(m.group(2))
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
             ensure_player(player)
             players[player]["total_bet"] += amount
             add_action(player, current_street, "call", amount)
             continue
 
-        m = re.match(r"^Player ([^\s]+) bets \(([\d.]+)\)$", line)
+        # Bets $X
+        m = re.match(r"^(.+?) - Bets \$([\d,]+(?:\.\d+)?)$", line)
         if m:
-            player, amount = m.group(1), safe_float(m.group(2))
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
             ensure_player(player)
             players[player]["total_bet"] += amount
             add_action(player, current_street, "bet", amount)
             continue
 
-        m = re.match(r"^Player ([^\s]+) raises \(([\d.]+)\)$", line)
-        if m:
-            player, amount = m.group(1), safe_float(m.group(2))
-            ensure_player(player)
-            players[player]["total_bet"] += amount
-            add_action(player, current_street, "raise", amount)
-            continue
-
-        # Pot / rake / jackpot fee
-        m = re.match(r"^Pot: ([\d.]+)\. Rake ([\d.]+)(?:\. JP fee ([\d.]+))?$", line)
-        if m:
-            hand["pot_total"] = safe_float(m.group(1))
-            hand["rake"] = safe_float(m.group(2))
-            hand["jp_fee"] = safe_float(m.group(3)) if m.group(3) else 0.0
-            continue
-
-        # Summary : joueur avec showdown
+        # Raises $X to $Y  →  on comptabilise X (l'incrément)
         m = re.match(
-            r"^\*?Player ([^\s]+) shows: .* \[([^\]]+)\]\. Bets: ([\d.]+)\. Collects: ([\d.]+)\. (Wins|Loses): ([\d.]+)\.$",
+            r"^(.+?) - Raises \$([\d,]+(?:\.\d+)?) to \$([\d,]+(?:\.\d+)?)$",
             line
         )
         if m:
-            player = m.group(1)
-            cards = m.group(2).split()
-            bets = safe_float(m.group(3))
-            collects = safe_float(m.group(4))
-
+            player = m.group(1).strip()
+            increment = safe_float(m.group(2))
             ensure_player(player)
-            players[player]["hole_cards"] = cards
+            players[player]["total_bet"] += increment
+            add_action(player, current_street, "raise", increment)
+            continue
+
+        # returned ($X) : not called  →  mise non suivie rendue
+        m = re.match(r"^(.+?) - returned \(\$([\d,]+(?:\.\d+)?)\) : not called$", line)
+        if m:
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
+            ensure_player(player)
+            players[player]["total_bet"] -= amount
+            continue
+
+        # --- Showdown ---
+        # Player - Does not show
+        m = re.match(r"^(.+?) - Does not show$", line)
+        if m:
+            player = m.group(1).strip()
+            ensure_player(player)
+            players[player]["showdown"] = 1
+            continue
+
+        # Player - Shows [Ac Kd] (description)
+        m = re.match(r"^(.+?) - Shows \[([^\]]+)\]", line)
+        if m:
+            player = m.group(1).strip()
+            cards = m.group(2).split()
+            ensure_player(player)
+            if len(cards) >= 2:
+                players[player]["hole_cards"] = cards[:2]
             players[player]["cards_known"] = 1
             players[player]["showdown"] = 1
-            players[player]["total_bet"] = bets
-            players[player]["total_collect"] = collects
-            players[player]["summary_result"] = collects - bets
-            players[player]["won_hand"] = 1 if collects > bets else 0
-            hand["has_showdown"] = 1
             continue
 
-        # Summary : joueur sans showdown
-        m = re.match(
-            r"^\*?Player ([^\s]+) does not show cards\. Bets: ([\d.]+)\. Collects: ([\d.]+)\. (Wins|Loses): ([\d.]+)\.$",
-            line
-        )
+        # Player Collects $X from main pot / side pot
+        m = re.match(r"^(.+?) Collects \$([\d,]+(?:\.\d+)?) from", line)
         if m:
-            player = m.group(1)
-            bets = safe_float(m.group(2))
-            collects = safe_float(m.group(3))
-
+            player, amount = m.group(1).strip(), safe_float(m.group(2))
             ensure_player(player)
-            players[player]["total_bet"] = bets
-            players[player]["total_collect"] = collects
-            players[player]["summary_result"] = collects - bets
-            players[player]["won_hand"] = 1 if collects > bets else 0
+            players[player]["total_collect"] += amount
+            players[player]["won_hand"] = 1
             continue
 
-        # Main terminée
-        m = re.match(r"^Game ended at: (.+)$", line)
-        if m:
-            hand["end_time"] = m.group(1)
-            continue
-
-    # Finalisation joueurs
+    # --- Finalisation ---
     hand["num_players"] = len(players)
+    hand["winner_count"] = sum(1 for p in players.values() if p["won_hand"] == 1)
 
     if hand["button_seat"] is not None:
         for p in players.values():
             if p["seat"] == hand["button_seat"]:
                 p["is_button"] = 1
-
-    # Nombre de gagnants
-    hand["winner_count"] = sum(1 for p in players.values() if p["won_hand"] == 1)
 
     player_rows = []
     for player, pdata in players.items():
@@ -331,7 +373,7 @@ def parse_single_hand(block):
             "total_bet": pdata["total_bet"],
             "total_collect": pdata["total_collect"],
             "net_result": pdata["total_collect"] - pdata["total_bet"],
-            "won_hand": pdata["won_hand"]
+            "won_hand": pdata["won_hand"],
         })
 
     return hand, player_rows, actions_rows_local
@@ -339,7 +381,7 @@ def parse_single_hand(block):
 
 def parse_poker_txt(file_path):
     """
-    Parse un fichier de logs poker et retourne 3 dataframes Pandas.
+    Parse un fichier de logs poker au format AbsolutePoker/UltimateBet.
 
     Args:
         file_path: Chemin vers le fichier .txt
@@ -355,35 +397,34 @@ def parse_poker_txt(file_path):
         with open(file_path, "r", encoding="latin-1") as f:
             text = f.read()
 
-    # Découpage en mains : chercher le premier "Game started at:" et découper à partir de là
-    match = re.search(r'Game started at:', text)
+    match = re.search(r"Stage #\d+:", text)
     if not match:
         logger.warning(f"Aucune main trouvée dans {file_path}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    
-    # Garder seulement le texte à partir du premier "Game started at:"
-    text = text[match.start():]
-    blocks = [b.strip() for b in re.split(r'(?=Game started at:)', text) if b.strip()]
 
-    hands_rows = []
-    player_hands_rows = []
-    actions_rows = []
+    text = text[match.start():]
+    blocks = [b.strip() for b in re.split(r"(?=Stage #\d+:)", text) if b.strip()]
+
+    hands_rows, player_hands_rows, actions_rows = [], [], []
 
     for block_idx, block in enumerate(blocks):
         try:
             hand_row, player_rows, action_rows = parse_single_hand(block)
-            if hand_row:
+            if hand_row and hand_row["game_id"] is not None:
                 hands_rows.append(hand_row)
                 player_hands_rows.extend(player_rows)
                 actions_rows.extend(action_rows)
         except Exception as e:
-            logger.warning(f"Erreur lors du parsing de la main {block_idx} dans {file_path}: {e}")
+            logger.warning(f"Erreur main {block_idx} dans {file_path}: {e}")
             continue
 
     hands_df = pd.DataFrame(hands_rows) if hands_rows else pd.DataFrame()
     player_hands_df = pd.DataFrame(player_hands_rows) if player_hands_rows else pd.DataFrame()
     actions_df = pd.DataFrame(actions_rows) if actions_rows else pd.DataFrame()
 
-    logger.info(f"{Path(file_path).name}: {len(hands_df)} mains, {len(player_hands_df)} joueurs, {len(actions_df)} actions")
+    logger.info(
+        f"{Path(file_path).name}: {len(hands_df)} mains, "
+        f"{len(player_hands_df)} joueurs, {len(actions_df)} actions"
+    )
 
     return hands_df, player_hands_df, actions_df
