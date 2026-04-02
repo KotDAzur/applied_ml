@@ -30,7 +30,7 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    txt_files = sorted(input_dir.glob("*.txt"))
+    txt_files = sorted(input_dir.glob("**/*.txt"))
 
     if not txt_files:
         logger.warning(f"Aucun fichier .txt trouvé dans {input_dir}")

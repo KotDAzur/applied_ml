@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def check_local_data() -> bool:
     """Vérifie si les fichiers .txt sont présents localement."""
-    return POKER_DATA_DIR.exists() and any(POKER_DATA_DIR.glob("*.txt"))
+    return POKER_DATA_DIR.exists() and any(POKER_DATA_DIR.glob("**/*.txt"))
 
 
 def download_from_hf() -> Path:
