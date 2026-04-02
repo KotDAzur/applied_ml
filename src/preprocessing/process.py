@@ -83,7 +83,7 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
     logger.info(f"   - actions.parquet: {len(actions_combined)} actions")
 
 
-def run() -> None:
+def run_preprocessing() -> None:
     """Lance le pipeline de preprocessing."""
     process_poker_files()
 
