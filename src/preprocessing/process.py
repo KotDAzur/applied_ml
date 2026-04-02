@@ -19,8 +19,8 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
     et génère 3 fichiers .parquet dans output_dir.
 
     Args:
-        input_dir:  Répertoire source (défaut: data/raw/Other DATA)
-        output_dir: Répertoire de destination (défaut: data/processed_v2)
+        input_dir:  Répertoire source (défaut: data/raw/poker_nlh)
+        output_dir: Répertoire de destination (défaut: data/processed)
     """
     if input_dir is None:
         input_dir = POKER_DATA_DIR
@@ -70,9 +70,11 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
 
 
 def run_preprocessing() -> None:
-    """Lance le pipeline de preprocessing v2."""
+    """Lance le pipeline de preprocessing."""
     process_poker_files()
 
 
 if __name__ == "__main__":
     run_preprocessing()
+
+
