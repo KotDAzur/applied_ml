@@ -5,10 +5,10 @@ Contient la logique d'agrégation et d'export.
 
 from pathlib import Path
 import logging
+import pandas as pd
 
 from src.config import POKER_DATA_DIR, RAW_DATA_DIR
 from src.preprocessing.tasks import parse_poker_txt
-import polars as pl
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +50,7 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
         try:
             hands_df, players_df, actions_df = parse_poker_txt(txt_file)
 
-            if not hands_df.is_empty():
+            if not hands_df.empty:
                 all_hands.append(hands_df)
                 all_players.append(players_df)
                 all_actions.append(actions_df)
@@ -64,18 +64,18 @@ def process_poker_files(input_dir: Path = None, output_dir: Path = None) -> None
         return
 
     # Concaténer tous les dataframes
-    hands_combined = pl.concat(all_hands)
-    players_combined = pl.concat(all_players)
-    actions_combined = pl.concat(all_actions)
+    hands_combined = pd.concat(all_hands, ignore_index=True)
+    players_combined = pd.concat(all_players, ignore_index=True)
+    actions_combined = pd.concat(all_actions, ignore_index=True)
 
     # Sauvegarder les fichiers en Parquet
     hands_file = output_dir / "hands.parquet"
     players_file = output_dir / "player_hands.parquet"
     actions_file = output_dir / "actions.parquet"
 
-    hands_combined.write_parquet(hands_file)
-    players_combined.write_parquet(players_file)
-    actions_combined.write_parquet(actions_file)
+    hands_combined.to_parquet(hands_file)
+    players_combined.to_parquet(players_file)
+    actions_combined.to_parquet(actions_file)
 
     logger.info(f"Résultats sauvegardés dans {output_dir.name}/")
     logger.info(f"   - hands.parquet: {len(hands_combined)} mains")

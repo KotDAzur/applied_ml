@@ -9,6 +9,7 @@ dependencies = [
     "kagglehub>=1.0.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
-    "polars>=1.39.3",
+    "pandas>=2.0.0",
     "scikit-learn>=1.8.0",
+    "pyarrow>=11.0.0",
 ]

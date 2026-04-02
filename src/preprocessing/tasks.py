@@ -6,7 +6,7 @@ Contient les fonctions de parsing et transformation.
 import re
 import logging
 from pathlib import Path
-import polars as pl
+import pandas as pd
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
@@ -339,13 +339,13 @@ def parse_single_hand(block):
 
 def parse_poker_txt(file_path):
     """
-    Parse un fichier de logs poker et retourne 3 dataframes Polars.
+    Parse un fichier de logs poker et retourne 3 dataframes Pandas.
 
     Args:
         file_path: Chemin vers le fichier .txt
 
     Returns:
-        Tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]: (hands, player_hands, actions)
+        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: (hands, player_hands, actions)
     """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -359,7 +359,7 @@ def parse_poker_txt(file_path):
     match = re.search(r'Game started at:', text)
     if not match:
         logger.warning(f"Aucune main trouvée dans {file_path}")
-        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     # Garder seulement le texte à partir du premier "Game started at:"
     text = text[match.start():]
@@ -380,21 +380,9 @@ def parse_poker_txt(file_path):
             logger.warning(f"Erreur lors du parsing de la main {block_idx} dans {file_path}: {e}")
             continue
 
-    hands_df = pl.DataFrame(hands_rows) if hands_rows else pl.DataFrame()
-    player_hands_df = pl.DataFrame(player_hands_rows) if player_hands_rows else pl.DataFrame()
-
-    # Normaliser les actions_rows aussi
-    if actions_rows:
-        all_keys = set()
-        for row in actions_rows:
-            all_keys.update(row.keys())
-
-        for row in actions_rows:
-            for key in all_keys:
-                if key not in row:
-                    row[key] = None
-
-    actions_df = pl.DataFrame(actions_rows) if actions_rows else pl.DataFrame()
+    hands_df = pd.DataFrame(hands_rows) if hands_rows else pd.DataFrame()
+    player_hands_df = pd.DataFrame(player_hands_rows) if player_hands_rows else pd.DataFrame()
+    actions_df = pd.DataFrame(actions_rows) if actions_rows else pd.DataFrame()
 
     logger.info(f"{Path(file_path).name}: {len(hands_df)} mains, {len(player_hands_df)} joueurs, {len(actions_df)} actions")
 
