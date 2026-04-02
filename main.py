@@ -1,6 +1,5 @@
 from src.dataset import download_poker_dataset
-from src.preprocessing.process import run as run_preprocessing
-
+from src.preprocessing.process import run_preprocessing
 
 def main() -> None:
     # Télécharger les données
